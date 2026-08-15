@@ -1,0 +1,6 @@
+# Runtime signaling mailboxes — never commit these
+sessions/*.json
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
