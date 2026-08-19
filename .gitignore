@@ -1,6 +1,11 @@
 # Runtime signaling mailboxes — never commit these
 sessions/*.json
 
+# VSCode
+.vscode/
+.vscode
+
 # OS / editor junk
 .DS_Store
 Thumbs.db
+stunnel.conf
