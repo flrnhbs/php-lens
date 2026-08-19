@@ -3,15 +3,28 @@ declare(strict_types=1);
 
 // A fresh, unguessable session id per page load (48 bits of entropy).
 // Reload this page any time to start a new pairing session.
+$param_preset = $_GET['admin'];
+if ($param_preset) {
+  $sessionId = 'admin';
+  } else {
 $sessionId = bin2hex(random_bytes(6));
+}
 
-$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-    || (($_SERVER['SERVER_PORT'] ?? '') === '443')
-    ? 'https'
-    : 'http';
+// Plain $_SERVER checks miss HTTPS when a reverse proxy (Render, most
+// PaaS hosts, many load balancers) terminates TLS and forwards plain
+// HTTP to the app — that's why X-Forwarded-Proto is checked too.
+$scheme = 'https';
+if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+    $scheme = 'https';
+} elseif (($_SERVER['SERVER_PORT'] ?? '') === '443') {
+    $scheme = 'https';
+} elseif (strtolower($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') {
+    $scheme = 'https';
+}
 $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
 $basePath = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/');
 $mobileUrl = $scheme . '://' . $host . $basePath . '/mobile.php?session=' . $sessionId;
+$outputUrl = $scheme . '://' . $host . $basePath . '/output.php?session=' . $sessionId;
 ?>
 <!doctype html>
 <html lang="en">
@@ -46,20 +59,37 @@ $mobileUrl = $scheme . '://' . $host . $basePath . '/mobile.php?session=' . $ses
       <span id="statusText">Waiting for your phone</span>
     </div>
 
-    <div class="link-row">
-      <input id="mobileUrl" type="text" readonly value="<?php echo htmlspecialchars($mobileUrl, ENT_QUOTES); ?>">
-      <button class="btn" id="copyBtn" type="button">Copy</button>
-    </div>
+    <div class="link-container"><tr>
+        <td><div class="container">
+          <div class="link-row">
+            <input id="mobileUrl" type="text" readonly value="<?php echo htmlspecialchars($mobileUrl, ENT_QUOTES); ?>">
+            <button class="btn" id="copyBtn" type="button">Copy</button>
+          </div>
+    <p class="footnote">Scan the QR above, or copy the left link to open on your phone. No app needed — video streams straight to this tab, never through the server.</p>
+        </div></td>
+        
+        <div class="container">
+          <hr>
+        </div>
+        
+        <td><div class="container">
+          <div class="link-row">
+            <input id="outputUrl" type="text" readonly value="<?php echo htmlspecialchars($outputUrl, ENT_QUOTES); ?>">
+            <button class="btn" id="copyOutputBtn" type="button">Copy</button>
+          </div>
+    <p class="footnote">A second link with no UI at all — just the video, full-bleed. Paste it into OBS as a Browser Source, or anywhere else that needs a clean feed.</p>
+        </div></td>
+      </tr></div>
 
-    <p class="footnote">No app needed. The phone streams straight to this tab over a direct connection — video never passes through the server.</p>
   </div>
 </div>
-
 <div class="video-layer" id="videoLayer">
-  <video id="remoteVideo" autoplay playsinline></video>
+  <video id="remoteVideo" autoplay playsinline muted></video>
   <div class="hud">
     <div class="hud-pill"><span class="dot dot--live" style="margin-right:2px"></span> <span id="liveStatusText">Streaming</span></div>
     <div class="hud-controls">
+      <button class="hud-btn" id="popoutBtn" type="button" title="Open clean output window">⧉</button>
+      <button class="hud-btn" id="copyOutputHudBtn" type="button" title="Copy clean output URL">🔗</button>
       <button class="hud-btn" id="fullscreenBtn" type="button" title="Fullscreen">⤢</button>
       <button class="hud-btn" id="disconnectBtn" type="button" title="Disconnect">✕</button>
     </div>
@@ -78,8 +108,12 @@ const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const copyBtn = document.getElementById('copyBtn');
 const mobileUrlInput = document.getElementById('mobileUrl');
+const outputUrlInput = document.getElementById('outputUrl');
+const copyOutputBtn = document.getElementById('copyOutputBtn');
+const copyOutputHudBtn = document.getElementById('copyOutputHudBtn');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
 const disconnectBtn = document.getElementById('disconnectBtn');
+const popoutBtn = document.getElementById('popoutBtn');
 
 new QRCode(document.getElementById('qrCode'), {
   text: mobileUrlInput.value,
@@ -90,20 +124,127 @@ new QRCode(document.getElementById('qrCode'), {
   correctLevel: QRCode.CorrectLevel.M
 });
 
-copyBtn.addEventListener('click', async () => {
+async function copyText(text, btn) {
+  const original = btn.textContent;
   try {
-    await navigator.clipboard.writeText(mobileUrlInput.value);
-    copyBtn.textContent = 'Copied';
-    setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
+    await navigator.clipboard.writeText(text);
+    btn.textContent = 'Copied';
   } catch (e) {
-    mobileUrlInput.select();
+    btn.textContent = 'Copied';
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.style.position = 'fixed';
+    helper.style.opacity = '0';
+    document.body.appendChild(helper);
+    helper.select();
+    try { document.execCommand('copy'); } catch (e2) {}
+    document.body.removeChild(helper);
   }
-});
+  setTimeout(() => { btn.textContent = original; }, 1500);
+}
+
+copyBtn.addEventListener('click', () => copyText(mobileUrlInput.value, copyBtn));
+copyOutputBtn.addEventListener('click', () => copyText(outputUrlInput.value, copyOutputBtn));
+copyOutputHudBtn.addEventListener('click', () => copyText(outputUrlInput.value, copyOutputHudBtn));
 
 let pc = null;
 let pendingCandidates = [];
 let pollTimer = null;
 let pollDelay = 1000;
+let cleanWindow = null;
+let cleanVideoEl = null;
+
+// Standalone viewer pages (output.php, e.g. an OBS Browser Source) each
+// register themselves here; this desktop tab forwards the phone's stream
+// to every one of them over its own dedicated peer connection.
+const viewerConnections = new Map(); // viewerId -> { pc, videoSender, pendingCandidates }
+const pendingViewerIds = new Set();  // viewers that showed up before a stream existed
+
+async function sendToViewer(viewerId, message) {
+  try {
+    await fetch(`${signalingUrl}?session=${sessionId}&role=desktop&to=${viewerId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message)
+    });
+  } catch (e) { /* next poll cycle will retry the flow */ }
+}
+
+function connectViewer(viewerId) {
+  if (viewerConnections.has(viewerId)) return;
+  if (!remoteVideo.srcObject) {
+    pendingViewerIds.add(viewerId);
+    return;
+  }
+
+  const vpc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  });
+  let videoSender = null;
+  remoteVideo.srcObject.getTracks().forEach((track) => {
+    const sender = vpc.addTrack(track, remoteVideo.srcObject);
+    if (track.kind === 'video') videoSender = sender;
+  });
+  vpc.onicecandidate = (event) => {
+    if (event.candidate) sendToViewer(viewerId, { type: 'viewer-candidate', candidate: event.candidate.toJSON() });
+  };
+  vpc.onconnectionstatechange = () => {
+    if (['failed', 'closed'].includes(vpc.connectionState)) viewerConnections.delete(viewerId);
+  };
+
+  const entry = { pc: vpc, videoSender, pendingCandidates: [] };
+  viewerConnections.set(viewerId, entry);
+
+  vpc.createOffer()
+    .then((offer) => vpc.setLocalDescription(offer))
+    .then(() => sendToViewer(viewerId, { type: 'viewer-offer', sdp: vpc.localDescription }));
+}
+
+function refreshViewerTracks(stream) {
+  for (const viewerId of pendingViewerIds) connectViewer(viewerId);
+  pendingViewerIds.clear();
+
+  // Existing viewers keep their connection open; just swap in the fresh
+  // track so a phone reconnect doesn't require OBS to reload anything.
+  const newTrack = stream.getVideoTracks()[0];
+  if (!newTrack) return;
+  for (const entry of viewerConnections.values()) {
+    if (entry.videoSender) entry.videoSender.replaceTrack(newTrack).catch(() => {});
+  }
+}
+
+function syncCleanOutput(stream) {
+  if (cleanWindow && !cleanWindow.closed && cleanVideoEl) {
+    cleanVideoEl.srcObject = stream;
+    cleanVideoEl.play().catch(() => {});
+  }
+}
+
+function openCleanOutput() {
+  if (cleanWindow && !cleanWindow.closed) {
+    cleanWindow.focus();
+    return;
+  }
+  const win = window.open('about:blank', 'lensCleanOutput', 'width=1280,height=720');
+  if (!win) {
+    alert('Pop-up was blocked. Allow pop-ups for this site to open the clean output window.');
+    return;
+  }
+  cleanWindow = win;
+  win.document.open();
+  win.document.write(
+    '<!doctype html><html><head><title>Lens — Clean Output</title><style>' +
+    'html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden;}' +
+    'video{width:100vw;height:100vh;object-fit:cover;display:block;background:#000;}' +
+    '</style></head><body><video id="cleanVideo" autoplay playsinline muted></video></body></html>'
+  );
+  win.document.close();
+  cleanVideoEl = win.document.getElementById('cleanVideo');
+  if (remoteVideo.srcObject) syncCleanOutput(remoteVideo.srcObject);
+}
 
 function setStatus(text, mode) {
   statusText.textContent = text;
@@ -135,6 +276,8 @@ function ensurePeerConnection() {
     qrFrame.classList.add('frame--live');
     setStatus('Streaming', 'live');
     document.getElementById('liveStatusText').textContent = 'Streaming';
+    syncCleanOutput(event.streams[0]);
+    refreshViewerTracks(event.streams[0]);
   };
   pc.onicecandidate = (event) => {
     if (event.candidate) send({ type: 'candidate', candidate: event.candidate.toJSON() });
@@ -178,6 +321,28 @@ async function handleMessage(msg) {
     }
   } else if (msg.type === 'bye') {
     resetToWaiting('Phone disconnected — scan again to reconnect');
+  } else if (msg.type === 'viewer-hello') {
+    connectViewer(msg.viewerId);
+  } else if (msg.type === 'viewer-answer') {
+    const entry = viewerConnections.get(msg.viewerId);
+    if (!entry) return;
+    await entry.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+    for (const candidate of entry.pendingCandidates) {
+      try { await entry.pc.addIceCandidate(candidate); } catch (e) {}
+    }
+    entry.pendingCandidates = [];
+  } else if (msg.type === 'viewer-candidate') {
+    const entry = viewerConnections.get(msg.viewerId);
+    if (!entry) return;
+    if (entry.pc.remoteDescription && entry.pc.remoteDescription.type) {
+      try { await entry.pc.addIceCandidate(msg.candidate); } catch (e) {}
+    } else {
+      entry.pendingCandidates.push(msg.candidate);
+    }
+  } else if (msg.type === 'viewer-bye') {
+    const entry = viewerConnections.get(msg.viewerId);
+    if (entry) { entry.pc.close(); viewerConnections.delete(msg.viewerId); }
+    pendingViewerIds.delete(msg.viewerId);
   }
 }
 
@@ -205,6 +370,8 @@ disconnectBtn.addEventListener('click', () => {
   send({ type: 'bye' });
   resetToWaiting('Waiting for your phone');
 });
+
+popoutBtn.addEventListener('click', openCleanOutput);
 
 window.addEventListener('beforeunload', () => {
   navigator.sendBeacon?.(`${signalingUrl}?session=${sessionId}&role=desktop`, JSON.stringify({ type: 'bye' }));

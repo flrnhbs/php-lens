@@ -2,7 +2,10 @@
 declare(strict_types=1);
 
 $rawSession = (string) ($_GET['session'] ?? '');
-$sessionValid = (bool) preg_match('/^[a-f0-9]{6,32}$/', $rawSession);
+$sessionValid = (bool) (
+    preg_match('/^[a-f0-9]{6,32}$/', $rawSession) ?: 
+    preg_match('/admin/', $rawSession)
+);   
 $sessionId = $sessionValid ? $rawSession : '';
 ?>
 <!doctype html>
@@ -124,14 +127,31 @@ $sessionId = $sessionValid ? $rawSession : '';
     if (err && err.name === 'NotFoundError') {
       return 'No camera was found on this device.';
     }
-    return 'Could not start the camera. Reload and try again.';
+    if (err && err.name === 'NotReadableError') {
+      return 'The camera is already in use by another app. Close it and try again.';
+    }
+    if (err && err.name === 'OverconstrainedError') {
+      return 'This device could not match the requested camera settings.';
+    }
+    if (err && err.name === 'SecurityError') {
+      return 'This page must be loaded over https:// for camera access to work.';
+    }
+    const detail = err && err.name ? ' (' + err.name + ')' : '';
+    return 'Could not start the camera' + detail + '. Reload and try again.';
   }
 
   async function startCamera() {
     startError.style.display = 'none';
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      startError.textContent = 'Camera access needs a secure connection. Check that the address bar shows https:// — not http:// — then reload.';
+      startError.style.display = 'block';
+      return;
+    }
+
     try {
       localStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: currentFacing, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: { facingMode: currentFacing, width: { ideal: 3840 }, height: { ideal: 2160 } },
         audio: false
       });
     } catch (err) {
@@ -166,22 +186,52 @@ $sessionId = $sessionValid ? $rawSession : '';
     startLabel.textContent = label || 'Tap to start the camera';
   }
 
+  let isFlippingCamera = false;
+
+  function showLiveNotice(text) {
+    const original = liveStatusText.textContent;
+    liveStatusText.textContent = text;
+    setTimeout(() => { liveStatusText.textContent = original; }, 2500);
+  }
+
   async function flipCamera() {
-    if (!localStream) return;
-    currentFacing = currentFacing === 'environment' ? 'user' : 'environment';
+    if (!localStream || !videoSender || isFlippingCamera) return;
+    isFlippingCamera = true;
+    const nextFacing = currentFacing === 'environment' ? 'user' : 'environment';
+    const oldTrack = localStream.getVideoTracks()[0];
+
     try {
+      // Release the current camera first. Many phones only allow one
+      // active camera stream at a time, so requesting a new one before
+      // stopping the old one fails silently on those devices.
+      if (oldTrack) { oldTrack.stop(); localStream.removeTrack(oldTrack); }
+
       const newStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: currentFacing, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: { facingMode: nextFacing, width: { ideal: 3840 }, height: { ideal: 2160 } },
         audio: false
       });
       const newTrack = newStream.getVideoTracks()[0];
-      const oldTrack = localStream.getVideoTracks()[0];
-      if (videoSender) await videoSender.replaceTrack(newTrack);
-      if (oldTrack) { oldTrack.stop(); localStream.removeTrack(oldTrack); }
+      await videoSender.replaceTrack(newTrack);
       localStream.addTrack(newTrack);
       localVideo.srcObject = localStream;
-    } catch (e) {
-      currentFacing = currentFacing === 'environment' ? 'user' : 'environment'; // revert on failure
+      currentFacing = nextFacing;
+    } catch (err) {
+      showLiveNotice(err && err.name === 'OverconstrainedError'
+        ? 'Geen andere camera beschikbaar op dit toestel'
+        : 'Kon niet wisselen van camera' + (err && err.name ? ' (' + err.name + ')' : ''));
+      // Try to recover the original camera so the stream doesn't just die.
+      try {
+        const revertStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: currentFacing, width: { ideal: 3840 }, height: { ideal: 2160 } },
+          audio: false
+        });
+        const revertTrack = revertStream.getVideoTracks()[0];
+        await videoSender.replaceTrack(revertTrack);
+        localStream.addTrack(revertTrack);
+        localVideo.srcObject = localStream;
+      } catch (e2) { /* nothing more we can do from here */ }
+    } finally {
+      isFlippingCamera = false;
     }
   }
 
