@@ -252,11 +252,12 @@ function openCleanOutput() {
     cleanWindow.focus();
     return;
   }
+  let win;
   if (res_support) {
-    const win = window.open('about:blank', 'lensCleanOutput', 'width=3840,height=2160')
+    win = window.open('about:blank', 'lensCleanOutput', 'width=3840,height=2160');
   } else {
-  const win = window.open('about:blank', 'lensCleanOutput', 'width=1920,height=1080');
-  } 
+    win = window.open('about:blank', 'lensCleanOutput', 'width=1920,height=1080');
+  }
   if (!win) {
     alert('Pop-up was blocked. Allow pop-ups for this site to open the clean output window.');
     return;

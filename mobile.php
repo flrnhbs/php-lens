@@ -69,6 +69,7 @@ $sessionId = $sessionValid ? $rawSession : '';
 
   <script>
   const sessionId = <?php echo json_encode($sessionId); ?>;
+  const res_support = <?php echo json_encode((bool) $res_support); ?>;
   const signalingUrl = 'signaling.php';
 
   const startStage = document.getElementById('startStage');
@@ -152,8 +153,11 @@ $sessionId = $sessionValid ? $rawSession : '';
     }
 
     try {
+      const videoConstraints = res_support
+        ? { facingMode: currentFacing, width: { ideal: 3840 }, height: { ideal: 2160 } }
+        : { facingMode: currentFacing, width: { ideal: 1920 }, height: { ideal: 1080 } };
       localStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: currentFacing, width: { exact: 3840 }, height: { exact: 2160 } },
+        video: videoConstraints,
         audio: false
       });
     } catch (err) {
@@ -208,12 +212,11 @@ $sessionId = $sessionValid ? $rawSession : '';
       // stopping the old one fails silently on those devices.
       if (oldTrack) { oldTrack.stop(); localStream.removeTrack(oldTrack); }
 
+      const videoConstraints = res_support
+        ? { facingMode: nextFacing, width: { ideal: 3840 }, height: { ideal: 2160 } }
+        : { facingMode: nextFacing, width: { ideal: 1920 }, height: { ideal: 1080 } };
       const newStream = await navigator.mediaDevices.getUserMedia({
-        if (res_support) {
-          video: { facingMode: nextFacing, width: { exact: 3840 }, height: { exact: 2160 } },
-        } else {
-          video: { facingMode: nextFacing, width: { ideal: 1920 }, height: { ideal: 1080 } },
-        };
+        video: videoConstraints,
         audio: false
       });
       const newTrack = newStream.getVideoTracks()[0];
@@ -227,12 +230,11 @@ $sessionId = $sessionValid ? $rawSession : '';
         : 'Kon niet wisselen van camera' + (err && err.name ? ' (' + err.name + ')' : ''));
       // Try to recover the original camera so the stream doesn't just die.
       try {
+        const revertConstraints = res_support
+          ? { facingMode: currentFacing, width: { ideal: 3840 }, height: { ideal: 2160 } }
+          : { facingMode: currentFacing, width: { ideal: 1920 }, height: { ideal: 1080 } };
         const revertStream = await navigator.mediaDevices.getUserMedia({
-        if (res_support) {
-          video: { facingMode: nextFacing, width: { exact: 3840 }, height: { exact: 2160 } },
-        } else {
-          video: { facingMode: nextFacing, width: { ideal: 3840 }, height: { ideal: 2160 } },
-        };
+          video: revertConstraints,
           audio: false
         });
         const revertTrack = revertStream.getVideoTracks()[0];
