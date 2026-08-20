@@ -1,0 +1,32 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "editor-browser",
+            "request": "launch",
+            "name": "[ipv4] Run PHP dev server",
+            "url": "https://192.168.1.169",
+            "webRoot": "${workspaceFolder}",
+            "preLaunchTask": "Run php ipv4",
+            "server":{
+                "program": "php -S localhost:8000 & sudo stunnel3 -f -d 443 -r 8000 -p ~/localhost-bundle.pem",
+                "console":"internalConsole",
+            }
+        },
+        {
+            "type": "editor-browser",
+            "request": "launch",
+            "name": "[local] Run PHP Developer server",
+            "url": "https://localhost:8000",
+            "webRoot": "${workspaceFolder}",
+            "server":{
+                "program": "php -S localhost:8000",
+                "console":"internalConsole",
+            }
+
+        },        
+    ]
+}
