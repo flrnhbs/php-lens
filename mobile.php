@@ -1,13 +1,12 @@
 <?php
 declare(strict_types=1);
 
-$res_support = $_GET['fullres'] ?? false;
-
 $rawSession = (string) ($_GET['session'] ?? '');
+$res_support = (bool) ($_GET['fullres'] ?? false);
 $sessionValid = (bool) (
-    preg_match('/^[a-f0-9]{6,32}$/', $rawSession) ?: 
+    preg_match('/^[a-f0-9]{6,32}$/', $rawSession) ?:
     preg_match('/admin/', $rawSession)
-);   
+);
 $sessionId = $sessionValid ? $rawSession : '';
 ?>
 <!doctype html>
@@ -143,6 +142,17 @@ $sessionId = $sessionValid ? $rawSession : '';
     return 'Could not start the camera' + detail + '. Reload and try again.';
   }
 
+  function applyFullresEncoding(sender) {
+    if (!res_support || !sender) return;
+    const parameters = sender.getParameters();
+    if (!parameters.encodings) parameters.encodings = [{}];
+    parameters.encodings[0].maxBitrate = 15000000; // 15 Mbps
+    parameters.encodings[0].scaleResolutionDownBy = 1.0; // don't let WebRTC downscale
+    sender.setParameters(parameters).catch((err) => {
+      console.error('Could not set 4K encoding parameters:', err);
+    });
+  }
+
   async function startCamera() {
     startError.style.display = 'none';
 
@@ -174,8 +184,20 @@ $sessionId = $sessionValid ? $rawSession : '';
     const conn = ensurePeerConnection();
     localStream.getTracks().forEach((track) => {
       const sender = conn.addTrack(track, localStream);
-      if (track.kind === 'video') videoSender = sender;
+      if (track.kind === 'video') {
+        videoSender = sender;
+        applyFullresEncoding(sender);
+      }
     });
+
+    // Quick diagnostic: confirms whether the camera actually captured at
+    // the requested resolution (separate from whether it gets sent at
+    // that resolution — check the browser console after starting).
+    const capturedTrack = localStream.getVideoTracks()[0];
+    if (capturedTrack) {
+      const settings = capturedTrack.getSettings();
+      console.log('Captured camera resolution:', settings.width + 'x' + settings.height);
+    }
 
     const offer = await conn.createOffer();
     await conn.setLocalDescription(offer);
@@ -212,11 +234,10 @@ $sessionId = $sessionValid ? $rawSession : '';
       // stopping the old one fails silently on those devices.
       if (oldTrack) { oldTrack.stop(); localStream.removeTrack(oldTrack); }
 
-      const videoConstraints = res_support
-        ? { facingMode: nextFacing, width: { ideal: 3840 }, height: { ideal: 2160 } }
-        : { facingMode: nextFacing, width: { ideal: 1920 }, height: { ideal: 1080 } };
       const newStream = await navigator.mediaDevices.getUserMedia({
-        video: videoConstraints,
+        video: res_support
+          ? { facingMode: nextFacing, width: { ideal: 3840 }, height: { ideal: 2160 } }
+          : { facingMode: nextFacing, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false
       });
       const newTrack = newStream.getVideoTracks()[0];
@@ -230,11 +251,10 @@ $sessionId = $sessionValid ? $rawSession : '';
         : 'Kon niet wisselen van camera' + (err && err.name ? ' (' + err.name + ')' : ''));
       // Try to recover the original camera so the stream doesn't just die.
       try {
-        const revertConstraints = res_support
-          ? { facingMode: currentFacing, width: { ideal: 3840 }, height: { ideal: 2160 } }
-          : { facingMode: currentFacing, width: { ideal: 1920 }, height: { ideal: 1080 } };
         const revertStream = await navigator.mediaDevices.getUserMedia({
-          video: revertConstraints,
+          video: res_support
+            ? { facingMode: currentFacing, width: { ideal: 3840 }, height: { ideal: 2160 } }
+            : { facingMode: currentFacing, width: { ideal: 1920 }, height: { ideal: 1080 } },
           audio: false
         });
         const revertTrack = revertStream.getVideoTracks()[0];
