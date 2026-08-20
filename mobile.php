@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+$res_support = $_GET['fullres'] ?? false;
+
 $rawSession = (string) ($_GET['session'] ?? '');
 $sessionValid = (bool) (
     preg_match('/^[a-f0-9]{6,32}$/', $rawSession) ?: 
@@ -151,7 +153,7 @@ $sessionId = $sessionValid ? $rawSession : '';
 
     try {
       localStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: currentFacing, width: { ideal: 3840 }, height: { ideal: 2160 } },
+        video: { facingMode: currentFacing, width: { exact: 3840 }, height: { exact: 2160 } },
         audio: false
       });
     } catch (err) {
@@ -207,7 +209,11 @@ $sessionId = $sessionValid ? $rawSession : '';
       if (oldTrack) { oldTrack.stop(); localStream.removeTrack(oldTrack); }
 
       const newStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: nextFacing, width: { ideal: 3840 }, height: { ideal: 2160 } },
+        if (res_support) {
+          video: { facingMode: nextFacing, width: { exact: 3840 }, height: { exact: 2160 } },
+        } else {
+          video: { facingMode: nextFacing, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        };
         audio: false
       });
       const newTrack = newStream.getVideoTracks()[0];
@@ -222,7 +228,11 @@ $sessionId = $sessionValid ? $rawSession : '';
       // Try to recover the original camera so the stream doesn't just die.
       try {
         const revertStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: currentFacing, width: { ideal: 3840 }, height: { ideal: 2160 } },
+        if (res_support) {
+          video: { facingMode: nextFacing, width: { exact: 3840 }, height: { exact: 2160 } },
+        } else {
+          video: { facingMode: nextFacing, width: { ideal: 3840 }, height: { ideal: 2160 } },
+        };
           audio: false
         });
         const revertTrack = revertStream.getVideoTracks()[0];

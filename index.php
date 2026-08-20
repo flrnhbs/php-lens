@@ -3,12 +3,14 @@ declare(strict_types=1);
 
 // A fresh, unguessable session id per page load (48 bits of entropy).
 // Reload this page any time to start a new pairing session.
-$param_preset = $_GET['admin'];
+$param_preset = $_GET['admin'] ?? false;
 if ($param_preset) {
   $sessionId = 'admin';
   } else {
 $sessionId = bin2hex(random_bytes(6));
 }
+
+$res_support = $_GET['fullres'] ?? false;
 
 // Plain $_SERVER checks miss HTTPS when a reverse proxy (Render, most
 // PaaS hosts, many load balancers) terminates TLS and forwards plain
@@ -23,8 +25,8 @@ if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
 }
 $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
 $basePath = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/');
-$mobileUrl = $scheme . '://' . $host . $basePath . '/mobile.php?session=' . $sessionId;
-$outputUrl = $scheme . '://' . $host . $basePath . '/output.php?session=' . $sessionId;
+$mobileUrl = $scheme . '://' . $host . $basePath . '/mobile.php?session=' . $sessionId . '&fullres=' . $res_support;
+$outputUrl = $scheme . '://' . $host . $basePath . '/output.php?session=' . $sessionId . '&fullres=' . $res_support;
 ?>
 <!doctype html>
 <html lang="en">
@@ -99,6 +101,8 @@ $outputUrl = $scheme . '://' . $host . $basePath . '/output.php?session=' . $ses
 <script>
 const sessionId = <?php echo json_encode($sessionId); ?>;
 const signalingUrl = 'signaling.php';
+
+const res_support = <?php echo json_encode($res_support); ?>;
 
 const qrFrame = document.getElementById('qrFrame');
 const pairingStage = document.getElementById('pairingStage');
@@ -184,10 +188,30 @@ function connectViewer(viewerId) {
     ]
   });
   let videoSender = null;
-  remoteVideo.srcObject.getTracks().forEach((track) => {
-    const sender = vpc.addTrack(track, remoteVideo.srcObject);
-    if (track.kind === 'video') videoSender = sender;
-  });
+remoteVideo.srcObject.getTracks().forEach((track) => {
+  const sender = vpc.addTrack(track, remoteVideo.srcObject);
+  
+  if (track.kind === 'video') {
+    videoSender = sender;
+   if (res_support) {
+      // --- 4K parameters forceren ---
+    const parameters = sender.getParameters();
+    
+    // Zorg dat de encodings array bestaat
+    if (!parameters.encodings) {
+      parameters.encodings = [{}];
+    }
+    
+    // Forceer de instellingen
+    parameters.encodings[0].maxBitrate = 15000000; // 15 Mbps voor 4K
+    parameters.encodings[0].scaleResolutionDownBy = 1.0; // Browser mag resolutie niet verkleinen
+    
+    // Pas de instellingen toe
+    sender.setParameters(parameters).catch(err => {
+      console.error("Kon 4K parameters niet instellen:", err);
+    });
+}  }
+});
   vpc.onicecandidate = (event) => {
     if (event.candidate) sendToViewer(viewerId, { type: 'viewer-candidate', candidate: event.candidate.toJSON() });
   };
@@ -228,7 +252,11 @@ function openCleanOutput() {
     cleanWindow.focus();
     return;
   }
-  const win = window.open('about:blank', 'lensCleanOutput', 'width=1280,height=720');
+  if (res_support) {
+    const win = window.open('about:blank', 'lensCleanOutput', 'width=3840,height=2160')
+  } else {
+  const win = window.open('about:blank', 'lensCleanOutput', 'width=1920,height=1080');
+  } 
   if (!win) {
     alert('Pop-up was blocked. Allow pop-ups for this site to open the clean output window.');
     return;
